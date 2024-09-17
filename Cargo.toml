@@ -1,5 +1,5 @@
 [package]
-name = "symproxycloud-rs"
+name = "symproxycloud"
 version = "0.1.0"
 edition = "2021"
 
