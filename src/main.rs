@@ -38,7 +38,7 @@ struct Config {
 #[derive(Parser, Debug, Clone)]
 struct Args {
     #[command(flatten)]
-    pub verbosity: Verbosity<InfoLevel>,
+    verbosity: Verbosity<InfoLevel>,
 
     /// Path to the configuration file
     #[arg(short, long)]

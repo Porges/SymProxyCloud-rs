@@ -1,2 +1,8 @@
+# The upstream symbol server.
 upstream_server = ""
+
+# The scope of the token. Typically looks like `api://XXXX.../.default`
 scope = ""
+
+# The address to listen on for incoming requests.
+listen_address = "0.0.0.0:5000"
