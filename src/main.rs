@@ -30,7 +30,7 @@ impl IntoResponse for Error {
 
 #[derive(Deserialize, Debug, Clone)]
 struct Config {
-    symbol_server_uri: Url,
+    upstream_server: Url,
     scope: String,
     local_port: Option<u16>,
 }
@@ -61,7 +61,7 @@ async fn symbol(
     let req = reqwest::Client::new()
         .get(
             config
-                .symbol_server_uri
+                .upstream_server
                 .join(&format!("{}/{}/{}", name1, hash, name2))
                 .context("failed to build request url")?,
         )
