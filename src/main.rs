@@ -17,6 +17,7 @@ use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
 use url::Url;
 
+/// `axum`-compatible error handler.
 #[derive(Debug, Error)]
 #[error(transparent)]
 pub struct Error(#[from] anyhow::Error);
@@ -24,6 +25,10 @@ pub struct Error(#[from] anyhow::Error);
 impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
         tracing::error!("{:?}", self.0);
+
+        // N.B: Normally returning the error in the response is not secure for
+        // a production server, but since this server is only intended for local
+        // use this is fine.
         (StatusCode::INTERNAL_SERVER_ERROR, format!("{:?}", self.0)).into_response()
     }
 }
@@ -83,6 +88,8 @@ async fn symbol(
     *response_builder
         .headers_mut()
         .context("failed to clone headers")? = req.headers().clone();
+
+    // Stream out the response from the upstream server as we receive it.
     Ok(response_builder
         .body(Body::from_stream(req.bytes_stream()))
         .context("failed to build response body")?)
@@ -92,6 +99,7 @@ async fn symbol(
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
+    // Set up trace logging to console and account for the user-provided verbosity flag.
     if args.verbosity.log_level_filter() != LevelFilter::Off {
         let var_name = match args.verbosity.log_level_filter() {
             LevelFilter::Off => tracing::Level::INFO,
@@ -104,6 +112,7 @@ async fn main() -> anyhow::Result<()> {
         tracing_subscriber::fmt().with_max_level(var_name).init();
     }
 
+    // Read and parse the user-provided configuration.
     let config = std::fs::read_to_string(&args.config).context("failed to read config file")?;
     let config: Config = toml::from_str(&config).context("failed to parse config file")?;
 
@@ -124,6 +133,7 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to bind address")?;
 
+    // Set up the `axum` application with a single endpoint to handle symbol server requests.
     let app = Router::new().route(
         "/:name1/:hash/:name2",
         get(symbol)
@@ -133,6 +143,7 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!("listening on {addr}");
 
+    // Serve the application :)
     axum::serve(listener, app.into_make_service())
         .await
         .context("failed to start server")
