@@ -31,7 +31,7 @@ impl IntoResponse for Error {
 #[derive(Deserialize, Debug, Clone)]
 struct Config {
     symbol_server_uri: Url,
-    audience: String,
+    scope: String,
     local_port: Option<u16>,
 }
 
@@ -67,7 +67,7 @@ async fn symbol(
         )
         .bearer_auth(
             token
-                .get_token(&[&config.audience])
+                .get_token(&[&config.scope])
                 .await
                 .context("failed to get token")?
                 .token
@@ -77,7 +77,7 @@ async fn symbol(
         .await
         .context("failed to send request")?;
 
-    // Forward out the full response from the upstream server.
+    // Forward out the full response from the upstream server, including headers and status code.
     let mut response_builder = Response::builder().status(req.status());
     *response_builder
         .headers_mut()
@@ -110,7 +110,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Attempt to acquire a token upon startup just to surface any configuration errors early.
     let _tok = token
-        .get_token(&[&config.audience])
+        .get_token(&[&config.scope])
         .await
         .context("failed to get token")?;
 
