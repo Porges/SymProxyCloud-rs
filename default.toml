@@ -1,0 +1,2 @@
+symbol_server_uri = "https://symweb.azurefd.net"
+audience = "api://af9e1c69-e5e9-4331-8cc5-cdf93d57bafa/.default"
