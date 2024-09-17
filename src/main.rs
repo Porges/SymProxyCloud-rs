@@ -51,6 +51,7 @@ struct AppState {
     token: Arc<dyn TokenCredential>,
 }
 
+/// Primary endpoint used to proxy a symbol file from the configured upstream server.
 async fn symbol(
     State(token): State<Arc<dyn TokenCredential>>,
     State(config): State<Config>,
@@ -91,15 +92,17 @@ async fn symbol(
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let var_name = match args.verbosity.log_level_filter() {
-        LevelFilter::Off => tracing::Level::INFO,
-        LevelFilter::Error => tracing::Level::ERROR,
-        LevelFilter::Warn => tracing::Level::WARN,
-        LevelFilter::Info => tracing::Level::INFO,
-        LevelFilter::Debug => tracing::Level::DEBUG,
-        LevelFilter::Trace => tracing::Level::TRACE,
-    };
-    tracing_subscriber::fmt().with_max_level(var_name).init();
+    if args.verbosity.log_level_filter() != LevelFilter::Off {
+        let var_name = match args.verbosity.log_level_filter() {
+            LevelFilter::Off => tracing::Level::INFO,
+            LevelFilter::Error => tracing::Level::ERROR,
+            LevelFilter::Warn => tracing::Level::WARN,
+            LevelFilter::Info => tracing::Level::INFO,
+            LevelFilter::Debug => tracing::Level::DEBUG,
+            LevelFilter::Trace => tracing::Level::TRACE,
+        };
+        tracing_subscriber::fmt().with_max_level(var_name).init();
+    }
 
     let config = std::fs::read_to_string(&args.config).context("failed to read config file")?;
     let config: Config = toml::from_str(&config).context("failed to parse config file")?;
