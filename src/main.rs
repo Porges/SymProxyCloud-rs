@@ -32,7 +32,7 @@ impl IntoResponse for Error {
 struct Config {
     upstream_server: Url,
     scope: String,
-    local_port: Option<u16>,
+    listen_address: Option<SocketAddr>,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -117,7 +117,9 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("failed to get token")?;
 
-    let addr = SocketAddr::from(([0, 0, 0, 0], config.local_port.unwrap_or(5000)));
+    let addr = config
+        .listen_address
+        .unwrap_or(SocketAddr::from(([0, 0, 0, 0], 5000)));
     let listener = TcpListener::bind(&addr)
         .await
         .context("failed to bind address")?;
