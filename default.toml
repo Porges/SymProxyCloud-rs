@@ -1,8 +1,15 @@
-# The upstream symbol server.
-upstream_server = ""
-
-# The scope of the token. Typically looks like `api://XXXX.../.default`
-scope = ""
-
 # The address to listen on for incoming requests.
 listen_address = "0.0.0.0:5000"
+
+[[servers]]
+# The upstream symbol server.
+url = "https://msdl.microsoft.com/download/symbols"
+
+# The scope of the token. Typically looks like `api://XXXX.../.default`
+# Omit this parameter to use a server that supports unauthenticated access.
+# scope = ""
+
+# You can include any number of additional symbol servers.
+# The proxy tool will try them in order when serving symbol requests.
+# [[servers]]
+# url = "..."

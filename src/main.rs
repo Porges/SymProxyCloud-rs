@@ -34,9 +34,16 @@ impl IntoResponse for Error {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+struct ConfigServer {
+    /// The URL of the upstream server.
+    url: Url,
+    /// The scope of the authentication token.
+    scope: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 struct Config {
-    upstream_server: Url,
-    scope: String,
+    servers: Vec<ConfigServer>,
     listen_address: Option<SocketAddr>,
 }
 
@@ -62,37 +69,51 @@ async fn symbol(
     State(config): State<Config>,
     Path((name1, hash, name2)): Path<(String, String, String)>,
 ) -> Result<Response, Error> {
-    // Dispatch a reqwest request to upstream, and serve the response.
-    // https://github.com/tokio-rs/axum/blob/680cdcba7cfa0b4fb37aba0c129ab6e4379bae3b/examples/reqwest-response/src/main.rs#L53-L68
-    let req = reqwest::Client::new()
-        .get(
-            config
-                .upstream_server
+    for server in &config.servers {
+        // Dispatch a reqwest request to upstream, and serve the response.
+        // https://github.com/tokio-rs/axum/blob/680cdcba7cfa0b4fb37aba0c129ab6e4379bae3b/examples/reqwest-response/src/main.rs#L53-L68
+        let req_builder = reqwest::Client::new().get(
+            server
+                .url
                 .join(&format!("{}/{}/{}", name1, hash, name2))
                 .context("failed to build request url")?,
-        )
-        .bearer_auth(
-            token
-                .get_token(&[&config.scope])
-                .await
-                .context("failed to get token")?
-                .token
-                .secret(),
-        )
-        .send()
-        .await
-        .context("failed to send request")?;
+        );
 
-    // Forward out the full response from the upstream server, including headers and status code.
-    let mut response_builder = Response::builder().status(req.status());
-    *response_builder
-        .headers_mut()
-        .context("failed to clone headers")? = req.headers().clone();
+        // If there is a scope attached to this server, attempt to authenticate.
+        let req_builder = if let Some(scope) = &server.scope {
+            req_builder.bearer_auth(
+                token
+                    .get_token(&[scope])
+                    .await
+                    .context("failed to get token")?
+                    .token
+                    .secret(),
+            )
+        } else {
+            req_builder
+        };
 
-    // Stream out the response from the upstream server as we receive it.
-    Ok(response_builder
-        .body(Body::from_stream(req.bytes_stream()))
-        .context("failed to build response body")?)
+        let req = req_builder.send().await.context("failed to send request")?;
+
+        // Check to see if the server returned a successful status code. If it didn't, continue on to the next server.
+        if !req.status().is_success() {
+            continue;
+        }
+
+        // Forward out the full response from the upstream server, including headers and status code.
+        let mut response_builder = Response::builder().status(req.status());
+        *response_builder.headers_mut().unwrap() = req.headers().clone();
+
+        // Stream out the response from the upstream server as we receive it.
+        return Ok(response_builder
+            .body(Body::from_stream(req.bytes_stream()))
+            .context("failed to build response body")?);
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(Body::empty())
+        .unwrap())
 }
 
 #[tokio::main]
@@ -121,10 +142,14 @@ async fn main() -> anyhow::Result<()> {
         azure_identity::create_default_credential().context("failed to create Azure credential")?;
 
     // Attempt to acquire a token upon startup just to surface any configuration errors early.
-    let _tok = token
-        .get_token(&[&config.scope])
-        .await
-        .context("failed to get token")?;
+    for server in &config.servers {
+        if let Some(scope) = &server.scope {
+            let _tok = token
+                .get_token(&[&scope])
+                .await
+                .context("failed to get token")?;
+        }
+    }
 
     let addr = config
         .listen_address
