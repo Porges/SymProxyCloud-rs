@@ -159,12 +159,10 @@ async fn main() -> anyhow::Result<()> {
         .context("failed to bind address")?;
 
     // Set up the `axum` application with a single endpoint to handle symbol server requests.
-    let app = Router::new().route(
-        "/:name1/:hash/:name2",
-        get(symbol)
-            .layer(TraceLayer::new_for_http())
-            .with_state(AppState { config, token }),
-    );
+    let app = Router::new()
+        .route("/:name1/:hash/:name2", get(symbol))
+        .layer(TraceLayer::new_for_http())
+        .with_state(AppState { config, token });
 
     tracing::info!("listening on {addr}");
 
