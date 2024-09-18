@@ -1,6 +1,16 @@
 # The address to listen on for incoming requests.
 listen_address = "127.0.0.1:5000"
 
+# Must be set to true in order to listen on non-loopback addresses.
+#
+# Think carefully before you enable this setting. The symbol servers are
+# authenticated for a reason, and this application is not designed to
+# authenticate incoming requests nor will it ever do so.
+# Ensure that you have either properly firewalled this application, or
+# set up a layer in front of the application (such as nginx) that can
+# authenticate incoming requests.
+i_am_not_an_idiot = false
+
 [[servers]]
 # The upstream symbol server.
 url = "https://msdl.microsoft.com/download/symbols"

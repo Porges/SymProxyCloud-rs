@@ -49,6 +49,7 @@ struct ConfigServer {
 struct Config {
     servers: Vec<ConfigServer>,
     listen_address: Option<SocketAddr>,
+    i_am_not_an_idiot: bool,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -158,6 +159,12 @@ async fn main() -> anyhow::Result<()> {
     let addr = config
         .listen_address
         .unwrap_or(SocketAddr::from((Ipv4Addr::LOCALHOST, 5000)));
+
+    let has_auth = config.servers.iter().any(|s| s.scope.is_some());
+    if has_auth && !config.i_am_not_an_idiot && !addr.ip().is_loopback() {
+        anyhow::bail!("You have configured the proxy to listen on a routable IP address with an upstream server that requires authentication, but `i_am_not_an_idiot` is still `false` in your configuration file. Read the documentation carefully before enabling the setting.");
+    }
+
     let listener = TcpListener::bind(&addr)
         .await
         .context("failed to bind address")?;
