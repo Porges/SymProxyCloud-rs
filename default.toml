@@ -11,18 +11,14 @@ listen_address = "127.0.0.1:5000"
 # authenticate incoming requests.
 i_am_not_an_idiot = false
 
-# Optional settings to configure symbol caching in Azure DevOps.
-# MI authentication is exclusively used for ADO, so you must authorize
-# this application's identity in your organization.
-# https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/service-principal-managed-identity?view=azure-devops#2-add-and-manage-service-principals-in-an-azure-devops-organization
-[cache]
-# The path to the Azure DevOps symbol app.
-# Relative to the CWD of the application at runtime.
-symbol_path = "./symbol.app/lib/net45/symbol.exe"
-
-# The Azure DevOps organization used to cache symbols. Can either be
-# the name or the GUID of the organization.
-organization = "example"
+# Optional settings to configure symbol caching via an Azure storage account.
+# MI authentication is the only mode supported, so you must grant the
+# application's identity access to your storage account.
+#[cache]
+# The name of the storage account to use as a cache.
+#storage_account = ""
+# The container within the storage account to use.
+#storage_container = ""
 
 [[servers]]
 # The upstream symbol server.
@@ -30,9 +26,9 @@ url = "https://msdl.microsoft.com/download/symbols"
 
 # The scope of the token. Typically looks like `api://XXXX.../.default`
 # Omit this parameter to use a server that supports unauthenticated access.
-# scope = ""
+#scope = ""
 
 # You can include any number of additional symbol servers.
 # The proxy tool will try them in order when serving symbol requests.
-# [[servers]]
-# url = "..."
+#[[servers]]
+#url = "..."

@@ -7,9 +7,11 @@ use axum::{
     Router,
 };
 use azure_core::auth::TokenCredential;
+use azure_storage::StorageCredentials;
+use azure_storage_blobs::blob::{BlobBlockType, BlockList};
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, LevelFilter, Verbosity};
-use futures::{Stream, StreamExt};
+use futures::{Stream, StreamExt, TryStreamExt};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use std::{
@@ -19,12 +21,11 @@ use std::{
     sync::Arc,
 };
 use thiserror::Error;
-use tokio::{fs::File, io::AsyncWriteExt, net::TcpListener};
+use tokio::net::TcpListener;
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::trace::TraceLayer;
-use tracing::{info, trace};
+use tracing::trace;
 use url::Url;
-use uuid::Uuid;
 
 /// `axum`-compatible error handler.
 #[derive(Debug, Error)]
@@ -44,10 +45,12 @@ impl IntoResponse for Error {
 
 #[derive(Deserialize, Debug, Clone)]
 struct ConfigCache {
-    /// The path to `symbol.exe`
-    symbol_path: PathBuf,
-    /// The organization to use
-    organization: String,
+    /// The Azure storage account to use
+    storage_account: String,
+    /// The container within the storage account to use
+    storage_container: String,
+    /// Access key.
+    key: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -88,29 +91,36 @@ async fn symbol(
     State(config): State<Config>,
     Path((name1, hash, name2)): Path<(String, String, String)>,
 ) -> Result<Response, Error> {
-    let servers = if let Some(mirror) = &config.cache {
-        // Insert an implicit entry for the Azure DevOps source.
-        std::iter::once(ConfigServer {
-            url: Url::parse(
-                format!(
-                    "https://artifacts.dev.azure.com/{}/_apis/symbol/symsrv/",
-                    mirror.organization
-                )
-                .as_str(),
-            )
-            .context("failed to parse mirror url")?,
-            scope: Some("499b84ac-1321-427f-aa17-267ca6975798/.default".to_string()),
-        })
-        .chain(config.servers.into_iter())
-        .collect::<Vec<_>>()
-    } else {
-        config.servers.into_iter().collect::<Vec<_>>()
-    };
+    // Attempt the storage account first, if one is set.
+    if let Some(cache) = &config.cache {
+        let cred = if let Some(key) = &cache.key {
+            StorageCredentials::access_key(&cache.storage_account, key.clone())
+        } else {
+            StorageCredentials::token_credential(token.clone())
+        };
 
-    for server in servers {
+        let client = azure_storage_blobs::prelude::ClientBuilder::new(&cache.storage_account, cred)
+            .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}"));
+
+        if let Ok(props) = client.get_properties().await {
+            let body = client.get().into_stream().map_ok(|r| r.data).try_flatten();
+
+            return Ok(Response::builder()
+                .header("Content-Type", "application/octet-stream")
+                .header(
+                    "Content-Length",
+                    &props.blob.properties.content_length.to_string(),
+                )
+                .status(StatusCode::OK)
+                .body(Body::from_stream(body))
+                .context("failed to build response body")?);
+        }
+    }
+
+    for server in &config.servers {
         let url = server
             .url
-            .join(&format!("{}/{}/{}", name1, hash, name2))
+            .join(&format!("{name1}/{hash}/{name2}"))
             .context("failed to build request url")?;
 
         // Dispatch a reqwest request to upstream, and serve the response.
@@ -143,79 +153,48 @@ async fn symbol(
         let mut response_builder = Response::builder().status(req.status());
         *response_builder.headers_mut().unwrap() = req.headers().clone();
 
-        // Mirror the file, ensuring we skip over the Azure DevOps server.
-        let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if !server
-            .url
-            .domain()
-            .unwrap()
-            .ends_with("artifacts.dev.azure.com")
-        {
-            if let Some(cache) = &config.cache {
-                let byte_count = req
-                    .content_length()
-                    .context("failed to get content length")?;
+        let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if let Some(cache) = &config.cache {
+            let mut stream = req.bytes_stream();
+            let (tx, rx) = tokio::sync::mpsc::channel(32);
 
-                let mut stream = req.bytes_stream();
-                let (tx, rx) = tokio::sync::mpsc::channel(32);
+            // Clone the cache into the task below.
+            let cache = cache.clone();
 
-                // Clone the cache into the task below.
-                let cache = cache.clone();
+            tokio::spawn(async move {
+                let cred = if let Some(key) = &cache.key {
+                    StorageCredentials::access_key(&cache.storage_account, key.clone())
+                } else {
+                    StorageCredentials::token_credential(token.clone())
+                };
 
-                tokio::spawn(async move {
-                    let uuid = Uuid::new_v4();
+                let client =
+                    azure_storage_blobs::prelude::ClientBuilder::new(&cache.storage_account, cred)
+                        .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}"));
 
-                    let file_path = std::env::temp_dir().join(&uuid.to_string());
-                    tokio::fs::create_dir_all(&file_path)
+                let mut block_list = BlockList::default();
+                let mut offs = 0u64;
+                while let Some(chunk) = stream.next().await {
+                    let chunk = chunk.context("failed to read chunk")?;
+
+                    let block_id = format!("{offs:018X}");
+                    offs += chunk.len() as u64;
+
+                    client
+                        .put_block(block_id.clone(), chunk.clone())
                         .await
-                        .context("failed to create temp directory")?;
+                        .unwrap();
+                    block_list
+                        .blocks
+                        .push(BlobBlockType::new_uncommitted(block_id));
 
-                    // Check to ensure that the disk is large enough to hold the file, and if so, reserve the space and
-                    // begin writing out response bytes to that file.
-                    let mut f = File::options()
-                        .create(true)
-                        .write(true)
-                        .open(&file_path.join(&name2))
-                        .await
-                        .context("failed to create temporary file")?;
-                    f.set_len(byte_count)
-                        .await
-                        .context("failed to resize temporary file")?;
+                    let _ = tx.send(Ok(chunk)).await;
+                }
 
-                    while let Some(chunk) = stream.next().await {
-                        let chunk = chunk.context("failed to read chunk")?;
+                client.put_block_list(block_list).await.unwrap();
+                Ok::<(), anyhow::Error>(())
+            });
 
-                        f.write_all(&chunk).await.context("failed to write chunk")?;
-                        tx.send(Ok(chunk)).await.context("failed to send chunk")?;
-                    }
-
-                    // Close the file to give `symbol.exe` exclusive access.
-                    drop(f);
-
-                    // Now invoke `symbol.exe` to publish the file to the mirror.
-                    tokio::process::Command::new(&cache.symbol_path)
-                        .arg("publish")
-                        .args(["-overrideAadPromptBehavior", "NoPrompt", "-a"])
-                        .arg("-s")
-                        .arg(&cache.organization)
-                        .arg("-d")
-                        .arg(&file_path)
-                        .arg("-n")
-                        .arg(&uuid.to_string())
-                        .status()
-                        .await
-                        .context("failed to run symbol.exe")?;
-
-                    tokio::fs::remove_dir_all(&file_path)
-                        .await
-                        .context("failed to delete temporary directory")?;
-
-                    Ok::<(), anyhow::Error>(())
-                });
-
-                Box::pin(ReceiverStream::new(rx))
-            } else {
-                Box::pin(req.bytes_stream())
-            }
+            Box::pin(ReceiverStream::new(rx))
         } else {
             Box::pin(req.bytes_stream())
         };
