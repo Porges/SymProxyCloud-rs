@@ -11,6 +11,19 @@ listen_address = "127.0.0.1:5000"
 # authenticate incoming requests.
 i_am_not_an_idiot = false
 
+# Optional settings to configure symbol caching in Azure DevOps.
+# MI authentication is exclusively used for ADO, so you must authorize
+# this application's identity in your organization.
+# https://learn.microsoft.com/en-us/azure/devops/integrate/get-started/authentication/service-principal-managed-identity?view=azure-devops#2-add-and-manage-service-principals-in-an-azure-devops-organization
+[cache]
+# The path to the Azure DevOps symbol app.
+# Relative to the CWD of the application at runtime.
+symbol_path = "./symbol.app/lib/net45/symbol.exe"
+
+# The Azure DevOps organization used to cache symbols. Can either be
+# the name or the GUID of the organization.
+organization = "example"
+
 [[servers]]
 # The upstream symbol server.
 url = "https://msdl.microsoft.com/download/symbols"

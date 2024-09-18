@@ -9,17 +9,22 @@ use axum::{
 use azure_core::auth::TokenCredential;
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, LevelFilter, Verbosity};
+use futures::{Stream, StreamExt};
 use reqwest::StatusCode;
 use serde::Deserialize;
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
+    pin::Pin,
     sync::Arc,
 };
 use thiserror::Error;
-use tokio::net::TcpListener;
+use tokio::{fs::File, io::AsyncWriteExt, net::TcpListener};
+use tokio_stream::wrappers::ReceiverStream;
 use tower_http::trace::TraceLayer;
+use tracing::{info, trace};
 use url::Url;
+use uuid::Uuid;
 
 /// `axum`-compatible error handler.
 #[derive(Debug, Error)]
@@ -38,6 +43,14 @@ impl IntoResponse for Error {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+struct ConfigCache {
+    /// The path to `symbol.exe`
+    symbol_path: PathBuf,
+    /// The organization to use
+    organization: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 struct ConfigServer {
     /// The URL of the upstream server.
     url: Url,
@@ -47,9 +60,10 @@ struct ConfigServer {
 
 #[derive(Deserialize, Debug, Clone)]
 struct Config {
-    servers: Vec<ConfigServer>,
     listen_address: Option<SocketAddr>,
     i_am_not_an_idiot: bool,
+    cache: Option<ConfigCache>,
+    servers: Vec<ConfigServer>,
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -74,15 +88,34 @@ async fn symbol(
     State(config): State<Config>,
     Path((name1, hash, name2)): Path<(String, String, String)>,
 ) -> Result<Response, Error> {
-    for server in &config.servers {
+    let servers = if let Some(mirror) = &config.cache {
+        // Insert an implicit entry for the Azure DevOps source.
+        std::iter::once(ConfigServer {
+            url: Url::parse(
+                format!(
+                    "https://artifacts.dev.azure.com/{}/_apis/symbol/symsrv/",
+                    mirror.organization
+                )
+                .as_str(),
+            )
+            .context("failed to parse mirror url")?,
+            scope: Some("499b84ac-1321-427f-aa17-267ca6975798/.default".to_string()),
+        })
+        .chain(config.servers.into_iter())
+        .collect::<Vec<_>>()
+    } else {
+        config.servers.into_iter().collect::<Vec<_>>()
+    };
+
+    for server in servers {
+        let url = server
+            .url
+            .join(&format!("{}/{}/{}", name1, hash, name2))
+            .context("failed to build request url")?;
+
         // Dispatch a reqwest request to upstream, and serve the response.
         // https://github.com/tokio-rs/axum/blob/680cdcba7cfa0b4fb37aba0c129ab6e4379bae3b/examples/reqwest-response/src/main.rs#L53-L68
-        let req_builder = reqwest::Client::new().get(
-            server
-                .url
-                .join(&format!("{}/{}/{}", name1, hash, name2))
-                .context("failed to build request url")?,
-        );
+        let req_builder = reqwest::Client::new().get(url.clone());
 
         // If there is a scope attached to this server, attempt to authenticate.
         let req_builder = if let Some(scope) = &server.scope {
@@ -101,6 +134,7 @@ async fn symbol(
         let req = req_builder.send().await.context("failed to send request")?;
 
         // Check to see if the server returned a successful status code. If it didn't, continue on to the next server.
+        trace!("{}: {}", url, req.status());
         if !req.status().is_success() {
             continue;
         }
@@ -109,9 +143,86 @@ async fn symbol(
         let mut response_builder = Response::builder().status(req.status());
         *response_builder.headers_mut().unwrap() = req.headers().clone();
 
+        // Mirror the file, ensuring we skip over the Azure DevOps server.
+        let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if !server
+            .url
+            .domain()
+            .unwrap()
+            .ends_with("artifacts.dev.azure.com")
+        {
+            if let Some(cache) = &config.cache {
+                let byte_count = req
+                    .content_length()
+                    .context("failed to get content length")?;
+
+                let mut stream = req.bytes_stream();
+                let (tx, rx) = tokio::sync::mpsc::channel(32);
+
+                // Clone the cache into the task below.
+                let cache = cache.clone();
+
+                tokio::spawn(async move {
+                    let uuid = Uuid::new_v4();
+
+                    let file_path = std::env::temp_dir().join(&uuid.to_string());
+                    tokio::fs::create_dir_all(&file_path)
+                        .await
+                        .context("failed to create temp directory")?;
+
+                    // Check to ensure that the disk is large enough to hold the file, and if so, reserve the space and
+                    // begin writing out response bytes to that file.
+                    let mut f = File::options()
+                        .create(true)
+                        .write(true)
+                        .open(&file_path.join(&name2))
+                        .await
+                        .context("failed to create temporary file")?;
+                    f.set_len(byte_count)
+                        .await
+                        .context("failed to resize temporary file")?;
+
+                    while let Some(chunk) = stream.next().await {
+                        let chunk = chunk.context("failed to read chunk")?;
+
+                        f.write_all(&chunk).await.context("failed to write chunk")?;
+                        tx.send(Ok(chunk)).await.context("failed to send chunk")?;
+                    }
+
+                    // Close the file to give `symbol.exe` exclusive access.
+                    drop(f);
+
+                    // Now invoke `symbol.exe` to publish the file to the mirror.
+                    tokio::process::Command::new(&cache.symbol_path)
+                        .arg("publish")
+                        .args(["-overrideAadPromptBehavior", "NoPrompt", "-a"])
+                        .arg("-s")
+                        .arg(&cache.organization)
+                        .arg("-d")
+                        .arg(&file_path)
+                        .arg("-n")
+                        .arg(&uuid.to_string())
+                        .status()
+                        .await
+                        .context("failed to run symbol.exe")?;
+
+                    tokio::fs::remove_dir_all(&file_path)
+                        .await
+                        .context("failed to delete temporary directory")?;
+
+                    Ok::<(), anyhow::Error>(())
+                });
+
+                Box::pin(ReceiverStream::new(rx))
+            } else {
+                Box::pin(req.bytes_stream())
+            }
+        } else {
+            Box::pin(req.bytes_stream())
+        };
+
         // Stream out the response from the upstream server as we receive it.
         return Ok(response_builder
-            .body(Body::from_stream(req.bytes_stream()))
+            .body(Body::from_stream(stream))
             .context("failed to build response body")?);
     }
 
