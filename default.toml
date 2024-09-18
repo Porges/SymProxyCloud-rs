@@ -1,5 +1,5 @@
 # The address to listen on for incoming requests.
-listen_address = "0.0.0.0:5000"
+listen_address = "127.0.0.1:5000"
 
 [[servers]]
 # The upstream symbol server.

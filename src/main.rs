@@ -11,7 +11,11 @@ use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, LevelFilter, Verbosity};
 use reqwest::StatusCode;
 use serde::Deserialize;
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::{Ipv4Addr, SocketAddr},
+    path::PathBuf,
+    sync::Arc,
+};
 use thiserror::Error;
 use tokio::net::TcpListener;
 use tower_http::trace::TraceLayer;
@@ -153,7 +157,7 @@ async fn main() -> anyhow::Result<()> {
 
     let addr = config
         .listen_address
-        .unwrap_or(SocketAddr::from(([0, 0, 0, 0], 5000)));
+        .unwrap_or(SocketAddr::from((Ipv4Addr::LOCALHOST, 5000)));
     let listener = TcpListener::bind(&addr)
         .await
         .context("failed to bind address")?;
