@@ -46,7 +46,7 @@ struct Args {
     verbosity: Verbosity<InfoLevel>,
 
     /// Path to the configuration file
-    #[arg(short, long)]
+    #[arg(short, long, default_value = "default.toml")]
     config: PathBuf,
 }
 

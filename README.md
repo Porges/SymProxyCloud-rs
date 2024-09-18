@@ -5,5 +5,5 @@ Rewrite of [`SymProxyCloud`](https://github.com/microsoft/SymProxyCloud/tree/mai
 Adjust symbol server configuration in `default.toml`.
 
 ```
-cargo run -- --config default.toml
+cargo run --release
 ```
