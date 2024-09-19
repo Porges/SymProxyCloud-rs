@@ -2,6 +2,7 @@ use anyhow::Context;
 use axum::{
     body::Body,
     extract::{FromRef, Path, State},
+    http::HeaderValue,
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -159,7 +160,15 @@ async fn symbol(
 
         // Forward out the full response from the upstream server, including headers and status code.
         let mut response_builder = Response::builder().status(req.status());
-        *response_builder.headers_mut().unwrap() = req.headers().clone();
+
+        if let Some(headers) = response_builder.headers_mut() {
+            *headers = req.headers().clone();
+
+            // Insert an additional header describing where this symbol originated from.
+            headers
+                .entry("X-Upstream-Server")
+                .or_insert_with(|| HeaderValue::from_str(server.url.as_str()).unwrap());
+        }
 
         // Now, we'll want to do one of two things depending on if caching is enabled:
         // If enabled, we should split the response stream into two and direct one end to the storage account,
@@ -246,7 +255,7 @@ async fn symbol(
     Ok(Response::builder()
         .status(StatusCode::NOT_FOUND)
         .body(Body::empty())
-        .unwrap())
+        .context("failed to build response body")?)
 }
 
 #[tokio::main]
