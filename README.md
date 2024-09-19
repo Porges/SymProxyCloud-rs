@@ -14,5 +14,6 @@ Afterwards, use the server by adding it to your symbol path: `SRV*http://localho
 ## Features
 * High throughput and performance 🚀
 * Minimal memory and CPU footprint. On my system, <1% CPU and ~30MB RAM _even under full load_.
-* Proxying to _multiple_ upstream server sources
-* Symbol mirroring to an Azure storage account
+* Proxying to _multiple_ upstream server sources.
+* Symbol mirroring to an Azure storage account.
+* Layered configurability with TOML file and environment variable overrides (e.g. `SYMPROXY_LISTEN_ADDRESS`).
