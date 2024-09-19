@@ -215,7 +215,11 @@ async fn symbol(
                             .map(|_| ()),
                         None => Ok(()),
                     } {
-                        error!("failed to put block while mirroring symbol: {:?}", e);
+                        error!(
+                            "{:?}",
+                            anyhow::Error::new(e)
+                                .context("failed to put block while mirroring symbol")
+                        );
 
                         // If an error occurs, set the client to `None` to abort mirroring.
                         client = None;
@@ -234,7 +238,10 @@ async fn symbol(
                 // Finalize the blob upload if mirroring has not been aborted.
                 if let Some(client) = client {
                     if let Err(e) = client.put_block_list(block_list).await {
-                        error!("failed to mirror symbol: {:?}", e);
+                        error!(
+                            "{:?}",
+                            anyhow::Error::new(e).context("failed to mirror symbol")
+                        );
                     }
                 }
 
