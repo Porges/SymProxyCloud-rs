@@ -25,7 +25,7 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::trace::TraceLayer;
-use tracing::{info, trace};
+use tracing::{error, info, trace};
 use url::Url;
 use uuid::Uuid;
 
@@ -36,7 +36,7 @@ pub struct Error(#[from] anyhow::Error);
 
 impl IntoResponse for Error {
     fn into_response(self) -> axum::response::Response {
-        tracing::error!("{:?}", self.0);
+        error!("{:?}", self.0);
 
         // N.B: Normally returning the error in the response is not secure for
         // a production server, but since this server is only intended for local
@@ -181,11 +181,15 @@ async fn symbol(
                     StorageCredentials::token_credential(token.clone())
                 };
 
+                // Wrap the client in an `Option`. If an error occurs, the client will be set to `None` and
+                // mirroring will be aborted.
+                let mut client = Some(
+                    azure_storage_blobs::prelude::ClientBuilder::new(&cache.storage_account, cred)
+                        .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}")),
+                );
+
                 // TODO: Check to see if another instance of the server is actively uploading the blob to the storage account.
                 // If so, simply direct the response stream back to the user as if caching was disabled.
-                let client =
-                    azure_storage_blobs::prelude::ClientBuilder::new(&cache.storage_account, cred)
-                        .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}"));
 
                 let mut block_list = BlockList::default();
                 while let Some(chunk) = stream.next().await {
@@ -195,10 +199,19 @@ async fn symbol(
                     // Use a randomly generated ID to avoid conflicts.
                     let block_id = format!("{}", Uuid::new_v4());
 
-                    client
-                        .put_block(block_id.clone(), chunk.clone())
-                        .await
-                        .unwrap();
+                    if let Err(e) = match &client {
+                        Some(client) => client
+                            .put_block(block_id.clone(), chunk.clone())
+                            .await
+                            .map(|_| ()),
+                        None => Ok(()),
+                    } {
+                        error!("failed to put block while mirroring symbol: {:?}", e);
+
+                        // If an error occurs, set the client to `None` to abort mirroring.
+                        client = None;
+                    }
+
                     block_list
                         .blocks
                         .push(BlobBlockType::new_uncommitted(block_id));
@@ -209,7 +222,13 @@ async fn symbol(
                     let _ = tx.send(Ok(chunk)).await;
                 }
 
-                client.put_block_list(block_list).await.unwrap();
+                // Finalize the blob upload if mirroring has not been aborted.
+                if let Some(client) = client {
+                    if let Err(e) = client.put_block_list(block_list).await {
+                        error!("failed to mirror symbol: {:?}", e);
+                    }
+                }
+
                 Ok::<(), anyhow::Error>(())
             });
 
