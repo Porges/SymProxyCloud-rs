@@ -250,6 +250,11 @@ async fn main() -> anyhow::Result<()> {
     let config = std::fs::read_to_string(&args.config).context("failed to read config file")?;
     let config: Config = toml::from_str(&config).context("failed to parse config file")?;
 
+    // Validation.
+    if config.servers.is_empty() {
+        anyhow::bail!("You must provide at least one upstream server in your configuration file.");
+    }
+
     // Authenticate.
     //
     // N.B: We are _not_ going to add support for secret-based authentication.
