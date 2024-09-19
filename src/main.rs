@@ -44,21 +44,27 @@ impl IntoResponse for Error {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+struct ConfigAuth {
+    /// The scope of the authentication token
+    scope: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
 struct ConfigCache {
     /// The Azure storage account to use
     storage_account: String,
     /// The container within the storage account to use
     storage_container: String,
-    /// Access key.
+    /// Access key
     key: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
 struct ConfigServer {
-    /// The URL of the upstream server.
+    /// The URL of the upstream server
     url: Url,
-    /// The scope of the authentication token.
-    scope: Option<String>,
+    /// Authentication settings
+    auth: Option<ConfigAuth>,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -128,10 +134,10 @@ async fn symbol(
         let req_builder = reqwest::Client::new().get(url.clone());
 
         // If there is a scope attached to this server, attempt to authenticate.
-        let req_builder = if let Some(scope) = &server.scope {
+        let req_builder = if let Some(auth) = &server.auth {
             req_builder.bearer_auth(
                 token
-                    .get_token(&[scope])
+                    .get_token(&[&auth.scope])
                     .await
                     .context("failed to get token")?
                     .token
@@ -238,9 +244,9 @@ async fn main() -> anyhow::Result<()> {
 
     // Attempt to acquire a token upon startup just to surface any configuration errors early.
     for server in &config.servers {
-        if let Some(scope) = &server.scope {
+        if let Some(auth) = &server.auth {
             let _tok = token
-                .get_token(&[&scope])
+                .get_token(&[&auth.scope])
                 .await
                 .context("failed to get token")?;
         }
@@ -250,7 +256,7 @@ async fn main() -> anyhow::Result<()> {
         .listen_address
         .unwrap_or(SocketAddr::from((Ipv4Addr::LOCALHOST, 5000)));
 
-    let has_auth = config.servers.iter().any(|s| s.scope.is_some());
+    let has_auth = config.servers.iter().any(|s| s.auth.is_some());
     if has_auth && !config.i_am_not_an_idiot && !addr.ip().is_loopback() {
         anyhow::bail!("You have configured the proxy to listen on a routable IP address with an upstream server that requires authentication, but `i_am_not_an_idiot` is still `false` in your configuration file. Read the documentation carefully before enabling the setting.");
     }

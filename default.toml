@@ -24,8 +24,10 @@ i_am_not_an_idiot = false
 # The upstream symbol server.
 url = "https://msdl.microsoft.com/download/symbols"
 
-# The scope of the token. Typically looks like `api://XXXX.../.default`
+# Server authentication settings.
 # Omit this parameter to use a server that supports unauthenticated access.
+#[servers.auth]
+# The scope of the token. Typically looks like `api://XXXX.../.default`
 #scope = ""
 
 # You can include any number of additional symbol servers.
