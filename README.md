@@ -3,6 +3,7 @@ Rewrite of [`SymProxyCloud`](https://github.com/microsoft/SymProxyCloud/tree/mai
 
 ## Quick start
 Read through and adjust the symbol server configuration in `default.toml`.
+Then, build and run the server:
 
 ```
 cargo run --release
