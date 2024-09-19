@@ -26,6 +26,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tower_http::trace::TraceLayer;
 use tracing::trace;
 use url::Url;
+use uuid::Uuid;
 
 /// `axum`-compatible error handler.
 #[derive(Debug, Error)]
@@ -159,6 +160,12 @@ async fn symbol(
         let mut response_builder = Response::builder().status(req.status());
         *response_builder.headers_mut().unwrap() = req.headers().clone();
 
+        // Now, we'll want to do one of two things depending on if caching is enabled:
+        // If enabled, we should split the response stream into two and direct one end to the storage account,
+        // and the other end to the requesting user. This also has the side effect of throttling the download
+        // speed if upload is slower, but this is the cost to pay to keep things out of memory.
+        //
+        // If disabled, we can simply direct the response stream back out to the requester directly.
         let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if let Some(cache) = &config.cache {
             let mut stream = req.bytes_stream();
             let (tx, rx) = tokio::sync::mpsc::channel(32);
@@ -173,17 +180,19 @@ async fn symbol(
                     StorageCredentials::token_credential(token.clone())
                 };
 
+                // TODO: Check to see if another instance of the server is actively uploading the blob to the storage account.
+                // If so, simply direct the response stream back to the user as if caching was disabled.
                 let client =
                     azure_storage_blobs::prelude::ClientBuilder::new(&cache.storage_account, cred)
                         .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}"));
 
                 let mut block_list = BlockList::default();
-                let mut offs = 0u64;
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk.context("failed to read chunk")?;
 
-                    let block_id = format!("{offs:018X}");
-                    offs += chunk.len() as u64;
+                    // N.B: `block_id` must be <= 64 bytes in size.
+                    // Use a randomly generated ID to avoid conflicts.
+                    let block_id = format!("{}", Uuid::new_v4());
 
                     client
                         .put_block(block_id.clone(), chunk.clone())
@@ -193,6 +202,9 @@ async fn symbol(
                         .blocks
                         .push(BlobBlockType::new_uncommitted(block_id));
 
+                    // Forward the data on to the original requesting client.
+                    // Ignore errors since we want mirroring to continue even if the client
+                    // closes their connection.
                     let _ = tx.send(Ok(chunk)).await;
                 }
 
@@ -239,6 +251,10 @@ async fn main() -> anyhow::Result<()> {
     let config: Config = toml::from_str(&config).context("failed to parse config file")?;
 
     // Authenticate.
+    //
+    // N.B: We are _not_ going to add support for secret-based authentication.
+    // It is insecure and strongly discouraged, so to encourage best practices
+    // we should just not support it :)
     let token =
         azure_identity::create_default_credential().context("failed to create Azure credential")?;
 
