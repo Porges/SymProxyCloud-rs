@@ -11,6 +11,7 @@ use azure_storage::StorageCredentials;
 use azure_storage_blobs::blob::{BlobBlockType, BlockList};
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, LevelFilter, Verbosity};
+use figment::{providers::Format, Figment};
 use futures::{Stream, StreamExt, TryStreamExt};
 use reqwest::StatusCode;
 use serde::Deserialize;
@@ -24,7 +25,7 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::ReceiverStream;
 use tower_http::trace::TraceLayer;
-use tracing::trace;
+use tracing::{info, trace};
 use url::Url;
 use uuid::Uuid;
 
@@ -69,7 +70,7 @@ struct ConfigServer {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-struct Config {
+struct AppConfig {
     listen_address: Option<SocketAddr>,
     i_am_not_an_idiot: bool,
     cache: Option<ConfigCache>,
@@ -88,14 +89,14 @@ struct Args {
 
 #[derive(Clone, FromRef)]
 struct AppState {
-    config: Config,
+    config: AppConfig,
     token: Arc<dyn TokenCredential>,
 }
 
 /// Primary endpoint used to proxy a symbol file from the configured upstream server.
 async fn symbol(
     State(token): State<Arc<dyn TokenCredential>>,
-    State(config): State<Config>,
+    State(config): State<AppConfig>,
     Path((name1, hash, name2)): Path<(String, String, String)>,
 ) -> Result<Response, Error> {
     // Attempt the storage account first, if one is set.
@@ -247,8 +248,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Read and parse the user-provided configuration.
-    let config = std::fs::read_to_string(&args.config).context("failed to read config file")?;
-    let config: Config = toml::from_str(&config).context("failed to parse config file")?;
+    let config: AppConfig = Figment::new()
+        .merge(figment::providers::Toml::file(args.config))
+        .merge(figment::providers::Env::prefixed("SYMPROXY_"))
+        .extract()
+        .context("failed to load configuration")?;
 
     // Validation.
     if config.servers.is_empty() {
@@ -266,6 +270,7 @@ async fn main() -> anyhow::Result<()> {
     // Attempt to acquire a token upon startup just to surface any configuration errors early.
     for server in &config.servers {
         if let Some(auth) = &server.auth {
+            info!("authenticating with server: {}", server.url);
             let _tok = token
                 .get_token(&[&auth.scope])
                 .await
