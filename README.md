@@ -1,6 +1,9 @@
 # SymProxyCloud-rs
 Rewrite of [`SymProxyCloud`](https://github.com/microsoft/SymProxyCloud/tree/main) leveraging `axum` and `tokio`.
 
+This tool provides a way to access symbols from one or more upstream sources, with or without authentication.
+By default, this tool will host a SymSrv-compatible HTTP server at `http://localhost:5000`.
+
 ## Quick start
 Read through and adjust the symbol server configuration in `default.toml`.
 Then, build and run the server:
