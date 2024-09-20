@@ -7,7 +7,7 @@ use axum::{
     routing::get,
     Router,
 };
-use azure_core::auth::TokenCredential;
+use azure_core::{auth::TokenCredential, prelude::Metadata};
 use azure_storage::StorageCredentials;
 use azure_storage_blobs::blob::{BlobBlockType, BlockList};
 use base64::Engine;
@@ -257,7 +257,14 @@ async fn symbol(
                 // time, the last one wins. Unfortunately we cannot acquire a lease on a blob that has not
                 // been created so we cannot prevent this race.
                 if let Some(client) = client {
-                    if let Err(e) = client.put_block_list(block_list).await {
+                    let mut meta = Metadata::new();
+                    meta.insert(
+                        "UpstreamServer",
+                        form_urlencoded::byte_serialize(url.as_str().as_bytes())
+                            .collect::<String>(),
+                    );
+
+                    if let Err(e) = client.put_block_list(block_list).metadata(meta).await {
                         error!(
                             "{:?}",
                             anyhow::Error::new(e).context("failed to mirror symbol")

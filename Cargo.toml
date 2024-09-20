@@ -14,6 +14,7 @@ base64 = "0.22.1"
 clap = { version = "4.5.17", features = ["derive"] }
 clap-verbosity-flag = "2.2.1"
 figment = { git = "https://github.com/SergioBenitez/Figment.git", version = "0.10.19", features = ["toml", "env"] }
+form_urlencoded = "1.2.1"
 futures = "0.3.30"
 reqwest = "0.12.7"
 serde = { version = "1.0.210", features = ["derive"] }
