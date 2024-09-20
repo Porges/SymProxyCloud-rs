@@ -17,3 +17,4 @@ Afterwards, use the server by adding it to your symbol path: `SRV*http://localho
 * Proxying to _multiple_ upstream server sources.
 * Symbol mirroring to an Azure storage account.
 * Layered configurability with TOML file and environment variable overrides (e.g. `SYMPROXY_LISTEN_ADDRESS`).
+* Health check endpoint at `/health` that can be used [directly by Azure](https://learn.microsoft.com/en-us/azure/app-service/monitor-instances-health-check?tabs=dotnet) to monitor the service's health.
