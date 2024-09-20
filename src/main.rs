@@ -205,9 +205,6 @@ async fn symbol(
                         .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}")),
                 );
 
-                // TODO: Check to see if another instance of the server is actively uploading the blob to the storage account.
-                // If so, simply direct the response stream back to the user as if caching was disabled.
-
                 let mut block_list = BlockList::default();
                 while let Some(chunk) = stream.next().await {
                     let chunk = chunk.context("failed to read chunk")?;
@@ -244,6 +241,10 @@ async fn symbol(
                 }
 
                 // Finalize the blob upload if mirroring has not been aborted.
+                //
+                // N.B: If multiple instances of this server attempt to upload the same blob at the same
+                // time, the last one wins. Unfortunately we cannot acquire a lease on a blob that has not
+                // been created so we cannot prevent this race.
                 if let Some(client) = client {
                     if let Err(e) = client.put_block_list(block_list).await {
                         error!(
