@@ -274,6 +274,23 @@ async fn symbol(
         .context("failed to build response body")?)
 }
 
+/// Endpoint used by Azure to query this application's health status.
+async fn health(State(config): State<AppConfig>) -> Result<Response, Error> {
+    // Run through every configured server and ensure they are reachable.
+    for server in &config.servers {
+        // Send a request to the root of the symbol server. Ignore the response
+        // since we are only interested in seeing if the symbol server responds.
+        let _req = reqwest::get(server.url.clone())
+            .await
+            .with_context(|| format!("symbol server \"{}\" is unreachable", server.url))?;
+    }
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())
+        .context("failed to build response body")?)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -311,14 +328,27 @@ async fn main() -> anyhow::Result<()> {
     let token =
         azure_identity::create_default_credential().context("failed to create Azure credential")?;
 
-    // Attempt to acquire a token upon startup just to surface any configuration errors early.
+    // Run through every configured server and ensure they are reachable.
     for server in &config.servers {
+        // Send a request to the root of the symbol server. Ignore the response
+        // since we are only interested in seeing if the symbol server responds.
+        if let Err(e) = reqwest::get(server.url.clone()).await {
+            // Log the error, but do not abort startup since it's possible that
+            // this could be a spurious network failure.
+            error!(
+                "{:?}",
+                anyhow::Error::new(e)
+                    .context(format!("symbol server \"{}\" is unreachable", server.url))
+            );
+        }
+
+        // Attempt to acquire a token upon startup just to surface any configuration errors early.
         if let Some(auth) = &server.auth {
-            info!("authenticating with server: {}", server.url);
+            info!("acquiring token for server: {}", server.url);
             let _tok = token
                 .get_token(&[&auth.scope])
                 .await
-                .context("failed to get token")?;
+                .with_context(|| format!("failed to get token for {}", server.url))?;
         }
     }
 
@@ -338,6 +368,7 @@ async fn main() -> anyhow::Result<()> {
     // Set up the `axum` application with a single endpoint to handle symbol server requests.
     let app = Router::new()
         .route("/:name1/:hash/:name2", get(symbol))
+        .route("/health", get(health))
         .layer(TraceLayer::new_for_http())
         .with_state(AppState { config, token });
 
