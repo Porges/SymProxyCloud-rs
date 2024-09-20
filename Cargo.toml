@@ -10,12 +10,14 @@ azure_core = "0.20.0"
 azure_identity = "0.20.0"
 azure_storage = "0.20.0"
 azure_storage_blobs = "0.20.0"
+base64 = "0.22.1"
 clap = { version = "4.5.17", features = ["derive"] }
 clap-verbosity-flag = "2.2.1"
 figment = { git = "https://github.com/SergioBenitez/Figment.git", version = "0.10.19", features = ["toml", "env"] }
 futures = "0.3.30"
 reqwest = "0.12.7"
 serde = { version = "1.0.210", features = ["derive"] }
+sha2 = "0.10.8"
 thiserror = "1.0.63"
 tokio = { version = "1.40.0", features = ["macros", "process", "rt-multi-thread"] }
 tokio-stream = "0.1.16"

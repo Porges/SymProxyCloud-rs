@@ -2,7 +2,7 @@ use anyhow::Context;
 use axum::{
     body::Body,
     extract::{FromRef, Path, State},
-    http::HeaderValue,
+    http::{HeaderMap, HeaderValue},
     response::{IntoResponse, Response},
     routing::get,
     Router,
@@ -10,12 +10,14 @@ use axum::{
 use azure_core::auth::TokenCredential;
 use azure_storage::StorageCredentials;
 use azure_storage_blobs::blob::{BlobBlockType, BlockList};
+use base64::Engine;
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, LevelFilter, Verbosity};
 use figment::{providers::Format, Figment};
 use futures::{Stream, StreamExt, TryStreamExt};
 use reqwest::{header, StatusCode};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
@@ -32,6 +34,9 @@ use uuid::Uuid;
 
 /// The header used to indicate the upstream server that a symbol was fetched from.
 const UPSTREAM_SERVER: &str = "X-Upstream-Server";
+
+/// The internal authentication token provided to us from Azure.
+const INTERNAL_AUTH_TOKEN: &str = "x-ms-auth-internal-token";
 
 /// `axum`-compatible error handler.
 #[derive(Debug, Error)]
@@ -275,7 +280,44 @@ async fn symbol(
 }
 
 /// Endpoint used by Azure to query this application's health status.
-async fn health(State(config): State<AppConfig>) -> Result<Response, Error> {
+async fn health(State(config): State<AppConfig>, headers: HeaderMap) -> Result<Response, Error> {
+    // Check to see if the request originates from Azure.
+    // https://learn.microsoft.com/en-us/azure/app-service/monitor-instances-health-check?tabs=dotnet#authentication-and-security
+    if let Some(key) = std::env::var_os("WEBSITE_AUTH_ENCRYPTION_KEY") {
+        let f = || {
+            // FIXME: According to the documentation, this header is only provided on Windows instances. Sigh.
+            let auth_token = headers
+                .get(INTERNAL_AUTH_TOKEN)
+                .context("missing internal auth token")?;
+
+            let hash = {
+                let mut sha = Sha256::new();
+                sha.update(key.as_encoded_bytes());
+                let hash = sha.finalize();
+
+                base64::prelude::BASE64_STANDARD.encode(hash.as_slice())
+            };
+
+            if hash.as_bytes() == auth_token.as_bytes() {
+                Ok(())
+            } else {
+                anyhow::bail!("invalid authentication hash");
+            }
+        };
+
+        match (f)() {
+            // Continue on.
+            Ok(_) => (),
+            // If validation fails for any reason, just return an opaque 401 response.
+            Err(_e) => {
+                return Ok(Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(Body::empty())
+                    .context("failed to build response body")?)
+            }
+        }
+    }
+
     // Run through every configured server and ensure they are reachable.
     for server in &config.servers {
         // Send a request to the root of the symbol server. Ignore the response
