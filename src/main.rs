@@ -32,6 +32,9 @@ use tracing::{error, info, trace};
 use url::Url;
 use uuid::Uuid;
 
+/// The header used to indicate the upstream source where a symbol came from.
+const UPSTREAM_SOURCE: &str = "X-Upstream-Source";
+
 /// The header used to indicate the upstream server that a symbol was fetched from.
 const UPSTREAM_SERVER: &str = "X-Upstream-Server";
 
@@ -128,6 +131,7 @@ async fn symbol(
             let body = client.get().into_stream().map_ok(|r| r.data).try_flatten();
 
             return Ok(Response::builder()
+                .header(UPSTREAM_SOURCE, "cache")
                 .header(header::CONTENT_TYPE, "application/octet-stream")
                 .header(
                     header::CONTENT_LENGTH,
@@ -178,9 +182,11 @@ async fn symbol(
             *headers = req.headers().clone();
 
             // Insert an additional header describing where this symbol originated from.
-            headers
-                .entry(UPSTREAM_SERVER)
-                .or_insert_with(|| HeaderValue::from_str(server.url.as_str()).unwrap());
+            headers.insert(UPSTREAM_SOURCE, HeaderValue::from_static("server"));
+            headers.insert(
+                UPSTREAM_SERVER,
+                HeaderValue::from_str(server.url.as_str()).unwrap(),
+            );
         }
 
         // Now, we'll want to do one of two things depending on if caching is enabled:
