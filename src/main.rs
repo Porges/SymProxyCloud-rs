@@ -190,9 +190,9 @@ async fn symbol(
         }
 
         // Now, we'll want to do one of two things depending on if caching is enabled:
-        // If enabled, we should split the response stream into two and direct one end to the storage account,
-        // and the other end to the requesting user. This also has the side effect of throttling the download
-        // speed if upload is slower, but this is the cost to pay to keep things out of memory.
+        // If enabled, we will split the response stream into two and direct one end to the storage account,
+        // and the other end to the requesting user. This also has the side effect of throttling the user's
+        // download speed if our upload is slower, but this is the cost to pay to keep things out of memory.
         //
         // If disabled, we can simply direct the response stream back out to the requester directly.
         let stream: Pin<Box<dyn Stream<Item = _> + Send>> = if let Some(cache) = &config.cache {
