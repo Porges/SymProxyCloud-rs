@@ -14,7 +14,7 @@ use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, LevelFilter, Verbosity};
 use figment::{providers::Format, Figment};
 use futures::{Stream, StreamExt, TryStreamExt};
-use reqwest::StatusCode;
+use reqwest::{header, StatusCode};
 use serde::Deserialize;
 use std::{
     net::{Ipv4Addr, SocketAddr},
@@ -29,6 +29,9 @@ use tower_http::trace::TraceLayer;
 use tracing::{error, info, trace};
 use url::Url;
 use uuid::Uuid;
+
+/// The header used to indicate the upstream server that a symbol was fetched from.
+const UPSTREAM_SERVER: &str = "X-Upstream-Server";
 
 /// `axum`-compatible error handler.
 #[derive(Debug, Error)]
@@ -112,12 +115,17 @@ async fn symbol(
             .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}"));
 
         if let Ok(props) = client.get_properties().await {
+            // N.B: Get the blob's data and stream it out directly instead of generating a SAS URL and returning a 302.
+            //
+            // This is important because this application may be placed behind a reverse proxy that supports auth,
+            // and returning an SAS URL subverts the authority of the reverse proxy (e.g. reverse proxy may want
+            // to log requests or set a time limit, but an SAS URL will allow users to bypass that).
             let body = client.get().into_stream().map_ok(|r| r.data).try_flatten();
 
             return Ok(Response::builder()
-                .header("Content-Type", "application/octet-stream")
+                .header(header::CONTENT_TYPE, "application/octet-stream")
                 .header(
-                    "Content-Length",
+                    header::CONTENT_LENGTH,
                     &props.blob.properties.content_length.to_string(),
                 )
                 .status(StatusCode::OK)
@@ -166,7 +174,7 @@ async fn symbol(
 
             // Insert an additional header describing where this symbol originated from.
             headers
-                .entry("X-Upstream-Server")
+                .entry(UPSTREAM_SERVER)
                 .or_insert_with(|| HeaderValue::from_str(server.url.as_str()).unwrap());
         }
 
