@@ -11,14 +11,21 @@ listen_address = "127.0.0.1:5000"
 # authenticate incoming requests.
 i_am_not_an_idiot = false
 
-# Optional settings to configure symbol caching via an Azure storage account.
+# Optional settings to configure symbol caching.
+#[cache]
+
+# Cache using an Azure storage account as the backing store.
 # MI authentication is the only mode supported, so you must grant the
 # application's identity access to your storage account.
-#[cache]
+#type = "azure"
 # The name of the storage account to use as a cache.
 #storage_account = ""
 # The container within the storage account to use.
 #storage_container = ""
+
+# Cache using the filesystem as the backing store.
+#type = "fs"
+#path = "./symstore"
 
 [[servers]]
 # The upstream symbol server.

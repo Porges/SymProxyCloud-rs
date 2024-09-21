@@ -22,11 +22,13 @@ use std::{
     net::{Ipv4Addr, SocketAddr},
     path::PathBuf,
     pin::Pin,
+    str::FromStr,
     sync::Arc,
 };
 use thiserror::Error;
-use tokio::net::TcpListener;
+use tokio::{io::AsyncWriteExt, net::TcpListener};
 use tokio_stream::wrappers::ReceiverStream;
+use tokio_util::io::ReaderStream;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, trace};
 use url::Url;
@@ -64,13 +66,26 @@ struct ConfigAuth {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-struct ConfigCache {
+struct ConfigAzureCache {
     /// The Azure storage account to use
     storage_account: String,
     /// The container within the storage account to use
     storage_container: String,
     /// Access key
     key: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+struct ConfigFsCache {
+    /// The path to the cache directory
+    path: PathBuf,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "lowercase")]
+enum ConfigCache {
+    Azure(ConfigAzureCache),
+    Fs(ConfigFsCache),
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -113,33 +128,53 @@ async fn symbol(
 ) -> Result<Response, Error> {
     // Attempt the storage account first, if one is set.
     if let Some(cache) = &config.cache {
-        let cred = if let Some(key) = &cache.key {
-            StorageCredentials::access_key(&cache.storage_account, key.clone())
-        } else {
-            StorageCredentials::token_credential(token.clone())
-        };
+        match &cache {
+            ConfigCache::Azure(cache) => {
+                let cred = if let Some(key) = &cache.key {
+                    StorageCredentials::access_key(&cache.storage_account, key.clone())
+                } else {
+                    StorageCredentials::token_credential(token.clone())
+                };
 
-        let client = azure_storage_blobs::prelude::ClientBuilder::new(&cache.storage_account, cred)
-            .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}"));
+                let client =
+                    azure_storage_blobs::prelude::ClientBuilder::new(&cache.storage_account, cred)
+                        .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}"));
 
-        if let Ok(props) = client.get_properties().await {
-            // N.B: Get the blob's data and stream it out directly instead of generating a SAS URL and returning a 302.
-            //
-            // This is important because this application may be placed behind a reverse proxy that supports auth,
-            // and returning an SAS URL subverts the authority of the reverse proxy (e.g. reverse proxy may want
-            // to log requests or set a time limit, but an SAS URL will allow users to bypass that).
-            let body = client.get().into_stream().map_ok(|r| r.data).try_flatten();
+                if let Ok(props) = client.get_properties().await {
+                    // N.B: Get the blob's data and stream it out directly instead of generating a SAS URL and returning a 302.
+                    //
+                    // This is important because this application may be placed behind a reverse proxy that supports auth,
+                    // and returning an SAS URL subverts the authority of the reverse proxy (e.g. reverse proxy may want
+                    // to log requests or set a time limit, but an SAS URL will allow users to bypass that).
+                    let body = client.get().into_stream().map_ok(|r| r.data).try_flatten();
 
-            return Ok(Response::builder()
-                .header(UPSTREAM_SOURCE, "cache")
-                .header(header::CONTENT_TYPE, "application/octet-stream")
-                .header(
-                    header::CONTENT_LENGTH,
-                    &props.blob.properties.content_length.to_string(),
-                )
-                .status(StatusCode::OK)
-                .body(Body::from_stream(body))
-                .context("failed to build response body")?);
+                    return Ok(Response::builder()
+                        .header(UPSTREAM_SOURCE, "cache")
+                        .header(header::CONTENT_TYPE, "application/octet-stream")
+                        .header(
+                            header::CONTENT_LENGTH,
+                            &props.blob.properties.content_length.to_string(),
+                        )
+                        .status(StatusCode::OK)
+                        .body(Body::from_stream(body))
+                        .context("failed to build response body")?);
+                }
+            }
+            ConfigCache::Fs(cache) => {
+                let path = cache.path.join(format!("{name1}/{hash}/{name2}"));
+                if let Ok(f) = tokio::fs::File::open(path.clone()).await {
+                    let meta = f.metadata().await.context("failed to get file metadata")?;
+                    let body = ReaderStream::new(f);
+
+                    return Ok(Response::builder()
+                        .header(UPSTREAM_SOURCE, "cache")
+                        .header(header::CONTENT_TYPE, "application/octet-stream")
+                        .header(header::CONTENT_LENGTH, meta.len().to_string())
+                        .status(StatusCode::OK)
+                        .body(Body::from_stream(body))
+                        .context("failed to build response body")?);
+                }
+            }
         }
     }
 
@@ -203,76 +238,116 @@ async fn symbol(
             let cache = cache.clone();
 
             tokio::spawn(async move {
-                let cred = if let Some(key) = &cache.key {
-                    StorageCredentials::access_key(&cache.storage_account, key.clone())
-                } else {
-                    StorageCredentials::token_credential(token.clone())
-                };
+                match cache {
+                    ConfigCache::Azure(cache) => {
+                        let cred = if let Some(key) = &cache.key {
+                            StorageCredentials::access_key(&cache.storage_account, key.clone())
+                        } else {
+                            StorageCredentials::token_credential(token.clone())
+                        };
 
-                // Wrap the client in an `Option`. If an error occurs, the client will be set to `None` and
-                // mirroring will be aborted.
-                let mut client = Some(
-                    azure_storage_blobs::prelude::ClientBuilder::new(&cache.storage_account, cred)
-                        .blob_client(&cache.storage_container, format!("{name1}/{hash}/{name2}")),
-                );
-
-                let mut block_list = BlockList::default();
-                while let Some(chunk) = stream.next().await {
-                    let chunk = chunk.context("failed to read chunk")?;
-
-                    // N.B: `block_id` must be <= 64 bytes in size.
-                    // Use a randomly generated ID to avoid conflicts.
-                    let block_id = format!("{}", Uuid::new_v4());
-
-                    if let Err(e) = match &client {
-                        Some(client) => client
-                            .put_block(block_id.clone(), chunk.clone())
-                            .await
-                            .map(|_| ()),
-                        None => Ok(()),
-                    } {
-                        error!(
-                            "{:?}",
-                            anyhow::Error::new(e)
-                                .context("failed to put block while mirroring symbol")
+                        // Wrap the client in an `Option`. If an error occurs, the client will be set to `None` and
+                        // mirroring will be aborted.
+                        let mut client = Some(
+                            azure_storage_blobs::prelude::ClientBuilder::new(
+                                &cache.storage_account,
+                                cred,
+                            )
+                            .blob_client(
+                                &cache.storage_container,
+                                format!("{name1}/{hash}/{name2}"),
+                            ),
                         );
 
-                        // If an error occurs, set the client to `None` to abort mirroring.
-                        client = None;
+                        let mut block_list = BlockList::default();
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = chunk.context("failed to read chunk")?;
+
+                            // N.B: `block_id` must be <= 64 bytes in size.
+                            // Use a randomly generated ID to avoid conflicts.
+                            let block_id = format!("{}", Uuid::new_v4());
+
+                            if let Err(e) = match &client {
+                                Some(client) => client
+                                    .put_block(block_id.clone(), chunk.clone())
+                                    .await
+                                    .map(|_| ()),
+                                None => Ok(()),
+                            } {
+                                error!(
+                                    "{:?}",
+                                    anyhow::Error::new(e)
+                                        .context("failed to put block while mirroring symbol")
+                                );
+
+                                // If an error occurs, set the client to `None` to abort mirroring.
+                                client = None;
+                            }
+
+                            block_list
+                                .blocks
+                                .push(BlobBlockType::new_uncommitted(block_id));
+
+                            // Forward the data on to the original requesting client.
+                            // Ignore errors since we want mirroring to continue even if the client
+                            // closes their connection.
+                            let _ = tx.send(Ok(chunk)).await;
+                        }
+
+                        // Finalize the blob upload if mirroring has not been aborted.
+                        //
+                        // N.B: If multiple instances of this server attempt to upload the same blob at the same
+                        // time, the last one wins. Unfortunately we cannot acquire a lease on a blob that has not
+                        // been created so we cannot prevent this race.
+                        if let Some(client) = client {
+                            let mut meta = Metadata::new();
+                            meta.insert(
+                                "UpstreamServer",
+                                form_urlencoded::byte_serialize(url.as_str().as_bytes())
+                                    .collect::<String>(),
+                            );
+
+                            if let Err(e) = client.put_block_list(block_list).metadata(meta).await {
+                                error!(
+                                    "{:?}",
+                                    anyhow::Error::new(e).context("failed to mirror symbol")
+                                );
+                            }
+                        }
+
+                        Ok::<(), anyhow::Error>(())
                     }
+                    ConfigCache::Fs(cache) => {
+                        let path = cache.path.join(format!("{name1}/{hash}/{name2}"));
 
-                    block_list
-                        .blocks
-                        .push(BlobBlockType::new_uncommitted(block_id));
+                        let mut f = {
+                            let _ = tokio::fs::create_dir_all(path.parent().unwrap()).await;
 
-                    // Forward the data on to the original requesting client.
-                    // Ignore errors since we want mirroring to continue even if the client
-                    // closes their connection.
-                    let _ = tx.send(Ok(chunk)).await;
-                }
+                            tokio::fs::File::create(path.clone()).await.ok()
+                        };
 
-                // Finalize the blob upload if mirroring has not been aborted.
-                //
-                // N.B: If multiple instances of this server attempt to upload the same blob at the same
-                // time, the last one wins. Unfortunately we cannot acquire a lease on a blob that has not
-                // been created so we cannot prevent this race.
-                if let Some(client) = client {
-                    let mut meta = Metadata::new();
-                    meta.insert(
-                        "UpstreamServer",
-                        form_urlencoded::byte_serialize(url.as_str().as_bytes())
-                            .collect::<String>(),
-                    );
+                        while let Some(chunk) = stream.next().await {
+                            let chunk = chunk.context("failed to read chunk")?;
 
-                    if let Err(e) = client.put_block_list(block_list).metadata(meta).await {
-                        error!(
-                            "{:?}",
-                            anyhow::Error::new(e).context("failed to mirror symbol")
-                        );
+                            if let Err(e) = match &mut f {
+                                Some(f) => f.write_all(&chunk).await.map(|_| ()),
+                                None => Ok(()),
+                            } {
+                                error!(
+                                    "{:?}",
+                                    anyhow::Error::new(e)
+                                        .context("failed to write chunk while mirroring symbol")
+                                );
+
+                                f = None;
+                            }
+
+                            let _ = tx.send(Ok(chunk)).await;
+                        }
+
+                        Ok::<(), anyhow::Error>(())
                     }
                 }
-
-                Ok::<(), anyhow::Error>(())
             });
 
             Box::pin(ReceiverStream::new(rx))
@@ -364,7 +439,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Read and parse the user-provided configuration.
-    let config: AppConfig = Figment::new()
+    let mut config: AppConfig = Figment::new()
         .merge(figment::providers::Toml::file(args.config))
         .merge(figment::providers::Env::prefixed("SYMPROXY_"))
         .extract()
@@ -384,7 +459,15 @@ async fn main() -> anyhow::Result<()> {
         azure_identity::create_default_credential().context("failed to create Azure credential")?;
 
     // Run through every configured server and ensure they are reachable.
-    for server in &config.servers {
+    for server in &mut config.servers {
+        // Ensure the URL ends with a trailing slash, as `url` will treat the last
+        // segment as a filename without it.
+        if !server.url.as_str().ends_with('/') {
+            // HACK: It doesn't seem like there is a better way to do this for now.
+            server.url = Url::from_str(&format!("{}/", server.url.as_str()))
+                .context("failed to append trailing slash to URL")?;
+        }
+
         // Send a request to the root of the symbol server. Ignore the response
         // since we are only interested in seeing if the symbol server responds.
         if let Err(e) = reqwest::get(server.url.clone()).await {
