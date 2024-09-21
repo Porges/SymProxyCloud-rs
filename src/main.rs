@@ -352,7 +352,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Set up trace logging to console and account for the user-provided verbosity flag.
     if args.verbosity.log_level_filter() != LevelFilter::Off {
-        let var_name = match args.verbosity.log_level_filter() {
+        let lvl = match args.verbosity.log_level_filter() {
             LevelFilter::Off => tracing::Level::INFO,
             LevelFilter::Error => tracing::Level::ERROR,
             LevelFilter::Warn => tracing::Level::WARN,
@@ -360,7 +360,7 @@ async fn main() -> anyhow::Result<()> {
             LevelFilter::Debug => tracing::Level::DEBUG,
             LevelFilter::Trace => tracing::Level::TRACE,
         };
-        tracing_subscriber::fmt().with_max_level(var_name).init();
+        tracing_subscriber::fmt().with_max_level(lvl).init();
     }
 
     // Read and parse the user-provided configuration.
