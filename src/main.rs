@@ -440,7 +440,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Read and parse the user-provided configuration.
     let mut config: AppConfig = Figment::new()
-        .merge(figment::providers::Toml::file(args.config))
+        .merge(figment::providers::Toml::file(args.config).required(true))
         .merge(figment::providers::Env::prefixed("SYMPROXY_"))
         .extract()
         .context("failed to load configuration")?;

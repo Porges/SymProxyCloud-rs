@@ -5,4 +5,5 @@
 !/Cargo.lock
 !/Cargo.toml
 !/default.toml
+!/Dockerfile
 !/README.md
